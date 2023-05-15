@@ -1,0 +1,194 @@
+---
+title: "Khanh Quach Data Exploration Project ECON 4110"
+format: docx
+editor: visual
+---
+
+```{r}
+# import the library will be used 
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(fixest)
+library(rio)
+library(vtable)
+```
+
+```{r}
+# Getting date data
+ggtrend <- list.files(pattern = "trends_up_to_", full.names = TRUE)
+# Read in the files and bind them together
+dataset <- import_list(ggtrend, rbind = TRUE, fill = TRUE )
+```
+
+```{r}
+# Aggregating the Google Trends data 
+dataset <- dataset %>% 
+  mutate(week = str_sub(monthorweek, start = 1, end = 10)) %>% 
+  mutate(week = ymd(week)) %>% 
+  mutate(month = floor_date(week, unit = "month"))
+  
+```
+
+```{r}
+dataset <- dataset %>%
+  group_by(schname, keyword) %>%
+  mutate(std_index = (index - mean(index))/sd(index)) 
+```
+
+```{r}
+
+# Reading the scorecard data and the id name data 
+# Import the scorecard one.
+scorecard <- import("Most+Recent+Cohorts+(Scorecard+Elements).csv")
+id_name_link <- import("id_name_link.csv")
+```
+
+```{r}
+# Merge the scorecard data
+# First step: count and filter duplicate
+id_name_link <- id_name_link %>%
+  group_by(schname) %>%
+  mutate(n = n()) %>%
+  filter(n == 1) # or drop can be fine.
+
+# Second step:  unitid and or opeid columns to link with scorecard data. 
+colnames(scorecard)[colnames(scorecard) == "UNITID"] = "unitid"
+
+# Join 2 data together
+
+id_link <- inner_join(id_name_link, scorecard, by ="unitid")
+gg_link <-inner_join(dataset, id_link, by ="schname")
+
+```
+
+```{r}
+export(gg_link, "finaldata.csv")
+```
+
+```{r}
+data_to_work <- import("finaldata.csv")
+```
+
+## The analysis
+
+```{r}
+# Filter by the college == "3" since PREDEG is=3 in The scorecard dicitonary 
+# mean that Predominatly bachelor - degree granting. 
+merged_data_bachelors <- data_to_work %>%
+  filter(PREDDEG == 3)
+
+# Filter by the college == "3" since PREDEG is=3 in The scorecard dictionary
+merged_data_bachelors <- subset(data_to_work, PREDDEG == 3)
+
+week <- merged_data_bachelors %>%
+  group_by(schname, monthorweek) %>%
+  mutate(week_index = mean(index, na.rm = TRUE)) %>%
+  filter(!is.na(week_index))
+
+```
+
+```{r}
+# make sure the column is numeric
+merged_data_bachelors$`md_earn_wne_p10-REPORTED-EARNINGS` <- as.numeric(as.character(merged_data_bachelors$`md_earn_wne_p10-REPORTED-EARNINGS`))
+
+# Calculate mean, standard deviation
+income.mean <- mean(na.omit(merged_data_bachelors$`md_earn_wne_p10-REPORTED-EARNINGS`))
+income.sd <- sd(na.omit(merged_data_bachelors$`md_earn_wne_p10-REPORTED-EARNINGS`))
+income.high <- income.mean + income.sd
+income.low <- income.mean - income.sd
+
+# Create binary variable for High/Low income
+merged_data_bachelors <- merged_data_bachelors %>%
+  mutate(Earnings = ifelse(`md_earn_wne_p10-REPORTED-EARNINGS` >= income.mean, "High", "Low"))
+
+# Categorize incomes into High, Middle, and Low
+merged_data_bachelors <- merged_data_bachelors %>%
+  mutate(treated = case_when(
+    `md_earn_wne_p10-REPORTED-EARNINGS` >= income.high ~ "High",
+    `md_earn_wne_p10-REPORTED-EARNINGS` <= income.low ~ "Low",
+    TRUE ~ "Middle Income" # this covers all other cases
+  ))
+```
+
+```{r}
+# create table to store variable that we will use 
+merged_data_bachelors_rec <- merged_data_bachelors %>%
+  select(unitid, schname, keyword, week, `md_earn_wne_p10-REPORTED-EARNINGS`, Earnings, std_index)
+```
+
+```{r}
+# Remove all of the missing values
+merged_data_bachelors_rec <- drop_na(merged_data_bachelors_rec)
+```
+
+```{r}
+merged_data_bachelors_rec <- merged_data_bachelors_rec %>% 
+  mutate(treated = `md_earn_wne_p10-REPORTED-EARNINGS` >= income.high, post_treatment = week >= as.Date("2015-09-12"))
+
+```
+
+```{r}
+#Build regression models
+# 1 regression 
+reg <- feols(std_index ~treated* post_treatment, data = merged_data_bachelors_rec)
+etable(reg)
+```
+
+```{r}
+#Dual line plot using un-dummy variable
+# One graph
+ggplot(merged_data_bachelors_rec, aes(week, std_index, color = Earnings)) +
+  stat_summary(geom = 'line') +
+  labs(title = 'Search index between high and low earning universities post- and pre-treatment', x = 'Year', y = 'Standardized Index') +
+  geom_vline(xintercept = as.Date ("2015-09-12")) +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+**Write up report:**
+
+1.  **Include at least one regression and one graph. ( Above )**
+2.  **Explain why you are performing the analysis you are performing and the choices you made in putting it together. Explain how your analysis addresses the research question**
+
+**The goal of this analysis is to answer the research question:**
+
+Did the introduction of the Scorecard cause a change in student interest, as reflected by Google searches for keywords related to high-earnings and low-earnings colleges, among institutions primarily conferring bachelor's degrees?
+
+**Things to Think about for the Analysis**
+
+**2. Explain how your analysis addresses the research question**
+
+**Question 1:** There is a variable in the Scorecard with information about the median earnings of graduates ten years after graduation for each college. But how can we define \"high-earning\" and \"low-earning\" colleges? There\'s not a single answer - be ready to defend your choice.
+
+After cleaning and merging all of the data, I found the information called  \`md_earn_wne_p10-REPORTED-EARNINGS\`. This is a variable in the scorecard with information about the median earnings of graduates ten years after graduation for each college. 
+
+In order to define whether the average salary for the individual is considered high-income or low-income, I created a variable called \"income. mean\" to find the mean, and then I created a variable called sd to find the standard deviation of the salary for individual median earnings of graduates ten years after graduation for each college.
+
+From this information, I decided to consider high-income earners as the ones who make more than \$55,278 ( 43559 - mean + 11718 - sd). Similarly to that, I defined the lower-income variable and got the results of  \$31,840
+
+**Question 2:** What level should the data be at? You can leave the data as is, with one row per week per keyword. Or group_by and summarize to put things to one week per college, or one month per college, or one month per keyword, etc. etc.
+
+I decided to group_by () and summarize to put things to one week per college.
+
+As mentioned in the prompt given, \" Google Trends indices are comparable only to themselves. That is, if the term \"Boston university\" increases from 15 to 16 from one week to the next, and the term \"Seattle university\" also went from 15 to 16, then we know that they both increased, but we don\'t know if the amount of increase was the same\" Therefore in order to come out with the best result. I decided to filter by one week per college. 
+
+**Question 3** How should the regression model be designed to answer the question (transformations and functional form? Standard error adjustments? etc.), and how can we interpret the results once we have them?
+
+Variable use to generate the regression: Week, id, median earnings -\> low/ high. Low and High earnings, and std_index ( standardize index)
+
+In order to delve deeper into the research question, a line chart was generated. This chart comprises two distinct periods, demarcated by a vertical line representing the release of the Scorecard, which marks the beginning of the post-treatment phase.
+
+Based on the calculated p-value, the null hypothesis suggesting no disparity between the treated group and the control group following the implementation of the treatment was rejected. Consequently, there exists statistically significant evidence indicating differing levels of search activity during the post-treatment period between the treated and control groups.
+
+**Any additional analyses you did that led you to design your main analysis that way (i.e. \"I graphed Y vs. X and it looked nonlinear so I added a polynomial term\" - you could even include this additional analysis if you like)**
+
+Upon analyzing the line graph, it becomes evident that there is a noteworthy similarity in the trend observed between the high-earning and low-earning groups during the pre-treatment period. However, subsequent to the implementation of the treatment, there was a substantial surge in the search index for universities associated with "high earning," while no noticeable change was observed in the search index for "low earning" universities.
+
+**Explain what we should conclude, *in real world terms*, based on your results**
+
+In real-world terms, this implies that students' search patterns for colleges underwent a notable transformation following the release of the Scorecard. We observed a clear upswing in search activity for colleges associated with higher earnings, indicating a heightened attraction towards such institutions. Conversely, we did not observe a significant alteration in search activity for colleges associated with lower earnings.
+
+These outcomes highlight the tangible impact of the Scorecard on students' decision-making process when exploring potential colleges. The Scorecard's provision of income-related information appears to have played a crucial role in steering students towards colleges with higher earning prospects.
